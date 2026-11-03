@@ -1,0 +1,55 @@
+<section class="chapter" id="ch7">
+  <div class="ch-head">
+    <div class="ch-num"><b>07</b>CHAPTER<br/>00:06</div>
+    <div class="ch-title">
+      <h2>成本账本与诚实的兜底</h2>
+      <p>降级不是纯技术决定。哪些任务允许自动换人、哪些必须停下来叫人——这是产品价值观写在代码里的样子</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">最后一章算两笔账：一笔是钱，一笔是信任。</p>
+    <h3>第一笔：每家单价不同，账本只有一本</h3>
+    <p>模型价格差着数量级——同一个任务，用 A 花三毛，用 B 花三分。如果不知道每次调用花了多少，路由策略就是瞎的。标本的计价函数只有五行（models.js · L432–437）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · costOf() · L433</span><b>百万 token 单价 → 单次成本</b></div>
+<pre><span class="c">/** 按模型单价估算本次调用成本（美元）。单价缺省为 0，即"不计费"。 */</span>
+<span class="k">function</span> <span class="f">costOf</span>(model, tokens) {
+  <span class="k">const</span> price = model?.price || {};
+  <span class="k">const</span> <span class="f">perM</span> = (n, p) => ((<span class="f">Number</span>(n) || <span class="n">0</span>) / <span class="n">1e6</span>) * (<span class="f">Number</span>(p) || <span class="n">0</span>);
+  <span class="k">return</span> +(<span class="f">perM</span>(tokens.in, price.in) + <span class="f">perM</span>(tokens.out, price.out)).<span class="f">toFixed</span>(<span class="n">6</span>);
+}</pre></div>
+    <p>「单价缺省为 0，即『不计费』」这句注释里有个容易被忽略的决定：<strong>不知道价格就记 0，而不是估个大概</strong>。在账本里，一个编出来的数字比一个明示的 0 更危险——前者会被当成事实统计进汇总，后者一眼就能看出是缺失。这和探针的 <code>verified</code> 字段是同一种诚实。</p>
+    <p>单价从哪来？<code>MODEL_PRESETS</code> 里随预设带上（store.js · L715–724，节选）：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>模型</th><th>输入 $/M</th><th>输出 $/M</th><th>相对成本（按 1:1 输入输出）</th></tr></thead>
+      <tbody>
+        <tr><td>GPT-4o</td><td class="num">2.5</td><td class="num">10</td><td class="num">×25.0</td></tr>
+        <tr><td>GPT-4o mini</td><td class="num">0.15</td><td class="num">0.6</td><td class="num">×1.5（基准）</td></tr>
+        <tr><td>Claude Sonnet 4</td><td class="num">3</td><td class="num">15</td><td class="num">×36.0</td></tr>
+        <tr><td>Gemini 2.0 Flash</td><td class="num">0.1</td><td class="num">0.4</td><td class="num">×1.0</td></tr>
+        <tr><td>Qwen VL Max</td><td class="num">0.6</td><td class="num">1.8</td><td class="num">×4.8</td></tr>
+        <tr><td>本地 Ollama</td><td class="num">0</td><td class="num">0</td><td class="num">×0（只烧电）</td></tr>
+      </tbody>
+    </table></div>
+    <p>这张表解释了 ch4 那条注释为什么说「首选贵模型 + 次选便宜模型<em>本身就是成本策略</em>」：<strong>链的顺序决定了账单的形状</strong>。首选 GPT-4o 的链，一旦回退到 mini，成本掉一个数量级；反过来，如果链尾兜底的是 Sonnet，那每一次「优雅降级」都在偷偷涨价。</p>
+    <h3>回退率：一个必须被看见的指标</h3>
+    <p>标本按角色统计每次调用（models.js · <code>CallLog.stats()</code> · L461–481）：总次数、回退次数、平均耗时、成本、token、失败数，最后算出两个派生指标：</p>
+    <div class="code"><div class="code-bar"><span>models.js · CallLog.stats() · L474–479（原样）</span><b>派生指标</b></div>
+<pre>s.avg = s.total ? <span class="f">Math</span>.<span class="f">round</span>(s.ms / s.total) : <span class="n">0</span>;
+s.cost = +s.cost.<span class="f">toFixed</span>(<span class="n">6</span>);
+s.fallbackRate = s.total ? <span class="f">Math</span>.<span class="f">round</span>((s.fellBack / s.total) * <span class="n">100</span>) : <span class="n">0</span>;</pre></div>
+    <p><code>fallbackRate</code> 是这台总机的体检指标。<strong>它悄悄涨上去，意味着你在为「可用」付越来越贵的钱</strong>——因为回退通常意味着用的是非首选模型（可能更差，也可能更贵），而且多花了重试的等待。一个 30% 回退率的 Agent，表面上一切正常，实际上三分之一的任务都没用上你精心挑选的首选模型。</p>
+    <p>这也是「诚实」的第二个落点：<strong>回退不能静默</strong>。所以 <code>invoke()</code> 的返回值里带了 <code>fellBack</code>、<code>retries</code>、<code>skipped</code>、<code>failures</code> 四个字段，界面可以把「这次是回退来的」明确标出来。用户有权利知道刚才那句话不是主模型说的。</p>
+
+    <h3>第二笔：什么情况下不许降级</h3>
+    <p>现在回到文章开头那件真事。那晚三个 GPT 系生图渠道全 503，如果代码里写的是「失败就换下一个渠道」，而下一个是另一个厂牌的模型——那么发出去的图会是一次<strong>静默的降级</strong>：风格变了、质量变了，而调用方完全不知道。</p>
+    <p>这类降级在纯文本任务里通常可接受（一句摘要，谁写的差别不大），但在下面这些场景里是<strong>不可接受</strong>的：</p>
+    <div class="rules">
+      <div class="rule"><b>RULE 01 · 产出一致性即契约</b><p>当用户买的是「这个模型的作品」——特定画风的插图、特定口吻的文案、特定代码风格的补全——换模型就是违约。这时候正确的动作是<em>停下来报告失败</em>，不是「尽力而为」地交一个别的模型的东西。</p></div>
+      <div class="rule"><b>RULE 02 · 降级要被看见</b><p>如果必须降级（比如可用性优先），那么降级这件事本身必须作为结果的一部分返回。静默降级比直接失败更坏：失败至少让人知道该重试，静默降级会让人把 A 的产出当成 B 的产出去用。</p></div>
+      <div class="rule"><b>RULE 03 · 兜底要明示是兜底</b><p>这就是链尾那个 <code>builtin-mock</code> 存在的意义。它不假装自己是真的——返回结构里带 <code>mock: true</code>。宁可给一个明确的「这是模拟结果」，也不给一个从死渠道里捞出来的错误堆栈（它会被当成正常回答吞下去）。</p></div>
+    </div>
+    <p>这三条不是技术约束，是<strong>产品契约</strong>。它们在代码里的形态往往极其简单——一个布尔开关、一条注释、一个返回字段——但每一条背后都是一次「要不要为了可用性牺牲正确性」的取舍。而这正是本篇开头那台总机的接线员最懂的事：</p>
+    <div class="pull">她的工作不是<b>保证每一通电话都接通</b>，而是保证每一通电话的去向<b>都被如实记录</b>。</div>
+    <p>一个全自动降级到底的系统，看起来最稳健，实际上最危险——因为它把所有「这里本可以停下来问一句」的时刻，都换成了「假装一切正常」。<em>降级策略不是可用性参数，是价值观的表达式。</em></p>
+  </div>
+</section>

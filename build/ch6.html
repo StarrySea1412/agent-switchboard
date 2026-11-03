@@ -1,0 +1,89 @@
+<section class="chapter" id="ch6">
+  <div class="ch-head">
+    <div class="ch-num"><b>06</b>CHAPTER<br/>00:05</div>
+    <div class="ch-title">
+      <h2>健康度从哪来：探测与留痕</h2>
+      <p>熔断器只知道「刚才那次失败了」，它不知道「这个渠道到底还剩多少命」。要回答后者，得有人专门去打电话试</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">前两章的熔断与回退都是<strong>被动</strong>的：等请求失败，再记账、再换人。可如果你的渠道名单像本机这样有 88 条、198 个模型，被动发现问题就太晚了——用户会先撞上。另一台总机（标本 B）解决的是这个问题：<em>主动探测</em>。</p>
+    <p>cc-probe 的定位一句话（README 原文）：</p>
+    <div class="pull">导入 → 拉模型 → 探测（<b>存活 / 速度 / 视觉 / 视频 / 鹈鹕 SVG</b>）→ 分组展示 + 成本估算 + 详细日志</div>
+    <p>五种探测里，前三种是常识（发条消息看回不回、量首字节、发张图看认不认）。真正有意思的是后两种：<strong>视频</strong>（发一段真视频，看模型是否真的理解运动）和<strong>鹈鹕骑自行车</strong>。后者在这个圈子里是有名的能力试金石——让模型生成一幅「鹈鹕骑自行车」的 SVG，能同时检验：空间关系理解、代码生成的语法正确性、以及「它是不是真的在画，而不是在复述训练集」。</p>
+    <div class="note"><b>为什么用 SVG 而不是图片？</b>因为探针要的是<em>可判定的证据</em>。SVG 是文本，可以直接解析、数元素、验证有没有自行车轮子；生成图片得再上一个视觉模型判卷，误差叠误差。这也解释了为什么本机 198 个模型里，鹈鹕探测只有一条成功记录——这是五类探测里最难的一类。</div>
+
+    <h3>留痕：一份能复盘的日志长什么样</h3>
+    <p>探针最值钱的不是探测本身，是它的日志。每条 result 的 <code>log</code> 字段是一份<strong>逐毫秒时间线</strong>，连脱敏后的密钥头、完整请求载荷、每一次重试的分段都留着。看真实的一条（channel 71 · claude-sonnet-4-6，原文照抄）：</p>
+    <div class="code"><div class="code-bar"><span>probe.db · results.log（真实记录，IP/密钥已脱敏）</span><b>两段式时间线</b></div>
+<pre><span class="c">=== 第 1 次尝试 ===</span>
+[       0ms] 探测 huan · claude-sonnet-4-6 · chat
+[       0ms] -&gt; POST https://ai.huan666.de/v1/responses (protocol=openai/responses)
+[       0ms] 头: Authorization: Bearer sk-XlH***
+[       0ms] 载荷: {"model": "claude-sonnet-4-6", "input": [{"role": "user",
+              "content": "你好，请用一句话介绍你自己。"}], "max_output_tokens": 32, "stream": true}
+[     469ms] &lt;- HTTP 500 (application/json; charset=utf-8)
+[     470ms] 错误体: {"error":{"message":"not implemented (request id: 20260910153322...)"}}
+[     470ms] 失败(server): HTTP 500: ...
+<span class="bad">[重试] 第 1 次失败(server: ...)，自动重试一次</span>
+<span class="c">=== 第 2 次尝试 ===</span>
+[       0ms] 探测 huan · claude-sonnet-4-6 · chat
+[       0ms] -&gt; POST https://ai.huan666.de/v1/responses (protocol=openai/responses)
+[     511ms] &lt;- HTTP 500 (application/json; charset=utf-8)
+[     512ms] 失败(server): ...
+[     512ms] 最终结果: 失败 (server)</pre></div>
+    <p>这份日志能回答的问题，比一条 <code>error: 500</code> 多得多：</p>
+    <ul>
+      <li><strong>协议判对了没？</strong><code>protocol=openai/responses</code> 说明探针认出这是个「OpenAI Responses 协议」的端点，载荷形状也对得上（<code>input</code> 数组 + <code>max_output_tokens</code>，是 Responses 而不是 Chat Completions 的形状）。</li>
+      <li><strong>密钥对不对？</strong>脱敏头能看到 <code>sk-XlH***</code> 的存在——如果 403 是密钥问题，这条线索很关键。</li>
+      <li><strong>两次尝试是同一种死法吗？</strong>都是 500、都是 <code>not implemented</code>，但 <code>request id</code> 不同——证明对面每次都真的执行到了那行代码，不是缓存。这就把「抖动」彻底排除了。</li>
+      <li><strong>时间花在哪？</strong>第 1 次 469ms、第 2 次 511ms。这两百多毫秒的差距说明「失败是快速的」（对面立即拒绝），而不是「超时」——后者会让探测结论完全不同。</li>
+    </ul>
+    <p><strong>「两次尝试是同一种死法吗」这一问，是整份日志里最有价值的设计。</strong>单次失败的日志只能告诉你「这次怎么了」，带重试对比的日志才能告诉你「这个错是不是稳定的」——而后者才是决定「该修还是该弃」的依据。所以探针的重试不是单纯的「再试一次」，它是<em>一次对照实验</em>。</p>
+
+    <h3>真实账本：23 条记录的分布</h3>
+    <p>把 <code>probe.db</code> 里 23 条 <code>results</code> 按「探测类型 × 结论」摊开，一眼能看出这台总机的真实处境：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>探测类型</th><th>ok</th><th>auth</th><th>not_found</th><th>server</th><th>rate_limit</th><th>timeout</th><th>bad_request</th><th>合计</th></tr></thead>
+      <tbody>
+        <tr><td><b>chat</b>（普通对话）</td><td class="num">0</td><td class="num">12</td><td class="num">3</td><td class="num">3</td><td class="num">1</td><td class="num">0</td><td class="num">0</td><td class="num">19</td></tr>
+        <tr><td><b>pelican</b>（鹈鹕 SVG）</td><td class="num" style="color:var(--green-deep)">1</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">1</td><td class="num">2</td><td class="num">4</td></tr>
+        <tr><td><b>合计</b></td><td class="num">1</td><td class="num">12</td><td class="num">3</td><td class="num">3</td><td class="num">1</td><td class="num">1</td><td class="num">2</td><td class="num">23</td></tr>
+      </tbody>
+    </table></div>
+    <p>两个数字值得盯住。<strong>第一，19 次 chat 探测只有 0 次成功，其中 12 次是 auth。</strong>这不是「模型不行」，这是<em>渠道质量分布</em>——绝大部分中转站的密钥已经失效或过期。这正是主动探测存在的理由：这条结论光靠用户碰运气，要撞多少个 401 才能得出？<strong>第二，唯一成功的 pelican 探测花了 35.3 秒、$0.026。</strong>它的完整记录是一份绝佳的「正常长什么样」样本：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>字段</th><th>值</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>channel / model</td><td><code>DGB</code> · <code>grok-4.7</code></td><td>渠道名与模型</td></tr>
+        <tr><td>ttfb_ms</td><td class="num">14985</td><td>首字节 15.0 秒——模型在「思考」</td></tr>
+        <tr><td>total_ms</td><td class="num">35307</td><td>整条 35.3 秒，其中 20.3 秒在吐字</td></tr>
+        <tr><td>tps</td><td class="num">85.08</td><td>每秒 85 token，对「画 SVG」这种慢任务算正常</td></tr>
+        <tr><td>cost</td><td class="num">$0.026115</td><td>按真实 token 数与单价算出</td></tr>
+        <tr><td>verified</td><td class="num">1</td><td><b>结果被二次核验过</b>（不只是「没报错」）</td></tr>
+      </tbody>
+    </table></div>
+    <p><code>verified=1</code> 这个字段是探针设计里最硬的一笔：<strong>「HTTP 200」不等于「成功了」</strong>。对面可能返回 200 加一句「抱歉，我无法生成图片」——如果探针把这种也算成功，账本会骗人。所以成功的探测还要过一道内容核验（真的拿到了可解析的 SVG）。这与 VOL.05（SeeFlow）的「证据先于结论」是同一条原则，只是落在了另一层。</p>
+
+    <h3>探测本身的礼仪：pacing 与脱敏</h3>
+    <p>主动探测有个天然副作用：<strong>你会被当成攻击者</strong>。ch3 现场③的 <code>bulk probe guard</code> 就是证据——60 秒 5 个模型触发反滥用封禁，<code>offense 3</code> 说明这台总机已经犯过三次。探针里对应的机制是 <code>HostPacer</code>（engine.py · <code>wait_turn()</code>）：按主机名排队，同一个 host 的请求不能同时打出去。这是一个极简的令牌桶——但它证明了一件重要的事：<em>探测是一把双刃剑，你越快知道真相，越可能被真相的来源封掉。</em></p>
+    <p>另一个细节是 <code>_mask()</code>（engine.py · L127）——所有日志里的密钥都过一遍脱敏，只留前 6 位加星号。这看起来是安全细节，其实是<strong>可用性细节</strong>：一份会泄露密钥的日志，团队就不敢分享；不敢分享的日志，就失去了「证据」的作用，只剩「记录」。<em>可分享性是可复用性的前提。</em></p>
+
+    
+    <div class="fig"><div class="frame">
+      <img src="assets/art/ch6.webp" alt="单眼折纸鸟戴着放大镜在打孔纸带机旁用铅笔记录台账" width="1152" height="832" loading="lazy" style="width:100%;border:1px solid var(--line)"/>
+    </div><figcaption><span><b>FIG. 05</b> 探针的岗位：主动打电话，逐毫秒记台账</span><span>INK &amp; GOUACHE / 2026</span></figcaption></div>
+
+<div class="demo" id="d4">
+      <div class="demo-head"><span class="demo-tag">DEMO 04 · 探针账本</span><span class="demo-title">23 条真实记录的逐条回放<span class="hint">点行看详情</span></span></div>
+      <div class="demo-body">
+        <div class="pl-filters" id="d4-filters"></div>
+        <div class="pl-ledger" id="d4-ledger"></div>
+        <div class="pl-detail" id="d4-detail"></div>
+      </div>
+      <div class="demo-foot">全部 23 条来自 <b>probe.db · results</b>（IP 脱敏，错误文案原文照抄）。筛选按探测类型与结论；点任意一行看该条的时间线摘录。唯一成功的 pelican 记录会完整展示 35.3 秒的链路。</div>
+    </div>
+
+    <p>账本有了，接下来是最后一件事：每次调用花了多少钱，以及——最难的——<strong>什么情况下允许降级</strong>。</p>
+  </div>
+</section>

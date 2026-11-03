@@ -1,0 +1,98 @@
+<section class="chapter" id="ch3">
+  <div class="ch-head">
+    <div class="ch-num"><b>03</b>CHAPTER<br/>00:02</div>
+    <div class="ch-title">
+      <h2>错误要分类：不同错不同药</h2>
+      <p>挂掉不是一种病，是一组病。限流该退避重试，鉴权失败重试一百次也是白搭——先分诊，再开药</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">总机接线员听三秒钟就知道该重拨还是该换号。代码里的「听三秒」叫<strong>错误分类</strong>，它是整个容错体系的总开关——分错类，后面的重试、回退、熔断全都在给错误的药方买单。标本 A 的分诊台是一个 60 行的正则函数，原文注释先把利害讲透了：</p>
+    <div class="pull">限流 / 网络抖动 → 值得在同一模型上退避重试；鉴权失败 / 模型不存在 / 请求不合法 → 重试也是白重试，直接换下一个模型。<b>这一层是「多级回退」能真正生效的前提 —— 不做分类就只能一律重试，既慢又费钱。</b></div>
+    <div class="code"><div class="code-bar"><span>models.js · classifyError() · L331（原样）</span><b>六类分诊</b></div>
+<pre><span class="k">function</span> <span class="f">classifyError</span>(msg) {
+  <span class="k">const</span> s = <span class="f">String</span>(msg || <span class="s">""</span>);
+  <span class="k">if</span> (<span class="s">/429|rate.?limit|too many requests|quota|throttl/i</span>.<span class="f">test</span>(s)) <span class="k">return</span> <span class="s">"rate_limit"</span>;
+  <span class="k">if</span> (<span class="s">/abort|timeout|超时|ETIMEDOUT|ECONN|ENOTFOUND|network|fetch failed|failed to fetch|socket/i</span>.<span class="f">test</span>(s)) <span class="k">return</span> <span class="s">"transient"</span>;
+  <span class="k">if</span> (<span class="s">/\b5\d{2}\b|internal server|bad gateway|service unavailable|overload/i</span>.<span class="f">test</span>(s)) <span class="k">return</span> <span class="s">"transient"</span>;
+  <span class="k">if</span> (<span class="s">/401|403|unauthor|forbidden|invalid.*api.?key|api.?key.*invalid|认证|鉴权/i</span>.<span class="f">test</span>(s)) <span class="k">return</span> <span class="s">"auth"</span>;
+  <span class="k">if</span> (<span class="s">/404|not found|no such model|model.*not.*exist|模型不存在/i</span>.<span class="f">test</span>(s)) <span class="k">return</span> <span class="s">"not_found"</span>;
+  <span class="k">if</span> (<span class="s">/400|422|invalid.*request|context.*length|too long|max_tokens/i</span>.<span class="f">test</span>(s)) <span class="k">return</span> <span class="s">"bad_request"</span>;
+  <span class="k">return</span> <span class="s">"unknown"</span>;
+}</pre></div>
+    <p>读这段正则有三个值得停顿的地方。<strong>其一，顺序即优先级</strong>：429 排在 5xx 前面，因为「配额超限」虽然顶着 4xx 的帽子，性质却是「等等就好」；若把 5xx 检查放前面没问题，但把 auth 放到 5xx 后面就会漏——有的中转站过载时把 403 也包在 502 响应体里。<strong>其二，中英文混合匹配</strong>：<code>超时</code>、<code>认证</code>、<code>鉴权</code>、<code>模型不存在</code>都在正则里——你的错误可能来自任何一层，包括自己人写的中文报错。<strong>其三，<code>unknown</code> 不是兜底药箱，是分诊台的诚实</strong>：认不出就明说认不出（后面会看到，unknown 的处置和 transient 一样保守，但归因会被如实记进台账）。</p>
+    <p>分诊之后开药。药方在配置层，只有两行——<strong>这才是全文最贵的五十个字</strong>：</p>
+    <div class="code"><div class="code-bar"><span>store.js · L773 / L782（原样）</span><b>药方</b></div>
+<pre><span class="c">// 只有这两类错误值得在同一模型上重试；其余重试也是白重试</span>
+<span class="k">const</span> RETRYABLE = <span class="k">new</span> <span class="f">Set</span>([<span class="s">"rate_limit"</span>, <span class="s">"transient"</span>]);</pre></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>类别</th><th>典型症状</th><th>药方</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr><td><code>rate_limit</code></td><td>429、quota、throttled</td><td class="ok"><b>退避重试</b></td><td>对面还活着，只是这会儿人多</td></tr>
+        <tr><td><code>transient</code></td><td>超时、断连、5xx</td><td class="ok"><b>退避重试</b></td><td>抖动大概率自愈</td></tr>
+        <tr><td><code>auth</code></td><td>401 / 403、密钥无效</td><td class="warn"><b>换人</b></td><td>重拨一百次也是空号</td></tr>
+        <tr><td><code>not_found</code></td><td>404、模型不存在</td><td class="warn"><b>换人</b></td><td>号码是空的</td></tr>
+        <tr><td><code>bad_request</code></td><td>400 / 422、上下文超长</td><td class="warn"><b>换人</b></td><td>换别的模型可能就接得下</td></tr>
+        <tr><td><code>unknown</code></td><td>谁也看不懂的报错</td><td class="warn"><b>换人 + 如实记录</b></td><td>不认识的症状按坏消息处理</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>第二套口径：另一台总机怎么分类</h3>
+    <p>标本 B（cc-probe 探针）是另一套班子写的，同一个问题的答案不太一样。它的重试策略只有一行判断（engine.py · <code>probe_with_retry</code>，L393）：</p>
+    <div class="code"><div class="code-bar"><span>engine.py · probe_with_retry() · L390–399（有删节）</span><b>反向排除法</b></div>
+<pre><span class="k">if</span> (<span class="f">not</span> ok
+    <span class="f">and</span> res.<span class="f">get</span>(<span class="s">"error_kind"</span>) <span class="f">not in</span> (<span class="s">"auth"</span>, <span class="s">"quota"</span>, <span class="s">"forbidden"</span>)):
+    <span class="c"># 除了这三种，剩下全部自动重试一次</span></pre></div>
+    <p>fuel-agent 是<strong>正向白名单</strong>：只重试 <code>rate_limit</code> 和 <code>transient</code>，其余一概换人。cc-probe 是<strong>反向黑名单</strong>：只不重试 <code>auth/quota/forbidden</code>，其余全试一次——包括 <code>not_found</code>。同一个世界，两种正确答案。它们的分歧点不在技术，在<strong>场景</strong>：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th>fuel-agent（产品运行时）</th><th>cc-probe（渠道探针）</th></tr></thead>
+      <tbody>
+        <tr><td><b>目标</b></td><td>让用户尽快拿到答案</td><td>让账本尽量准确</td></tr>
+        <tr><td><b>重试策略</b></td><td>正向白名单（2 类）</td><td>反向黑名单（排除 3 类）</td></tr>
+        <tr><td><b>not_found 重试？</b></td><td class="warn">否——立刻换模型</td><td class="ok">是——多打一次确认不是抖动</td></tr>
+        <tr><td><b>代价</b></td><td>可能漏掉「其实只是抖动」的模型</td><td>每次探测多花一次请求的时间</td></tr>
+        <tr><td><b>换模型的动力</b></td><td>强（用户就在等）</td><td>弱（没人等，准确性优先）</td></tr>
+      </tbody>
+    </table></div>
+    <p>所以「重试哪几类错误」这个问题<strong>没有标准答案，只有口径</strong>。任何声称「业界最佳实践就是这么分」的文章，都在替你省掉一个你本该自己做的决定：<em>你这个系统里，慢和错哪个更贵？</em></p>
+
+    <h3>三个真实的分类现场</h3>
+    <p>分类器写起来容易，实战里最见真章。以下三条全部来自 <code>probe.db</code> 的 <code>results</code> 表，原文照抄（密钥已由探针脱敏，IP 为真实探测出口）：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>现场</th><th>HTTP</th><th>报错原文（节选）</th><th>探针判</th><th>真相</th></tr></thead>
+      <tbody>
+        <tr><td><b>① 503 的壳</b><br/><small>channel 47 · gemini-3.6-flash</small></td><td class="num">503</td><td><code>{"error":{"code":"model_not_found",...}}</code></td><td class="warn"><code>server</code><br/>→ 重试</td><td><b>模型根本不存在</b>。重试是白等；该做的是换模型</td></tr>
+        <tr><td><b>② 500 的墙</b><br/><small>channel 71 · claude-sonnet-4-6</small></td><td class="num">500</td><td><code>{"code":"convert_request_failed","message":"not implemented"}</code></td><td class="warn"><code>server</code><br/>→ 重试</td><td><b>中转站不支持协议转换</b>。冷启动也好、过载也好都不成立，第二次一模一样死在 511ms</td></tr>
+        <tr><td><b>③ 403 的判词</b><br/><small>channel 47 · gpt-oss-20b</small></td><td class="num">403</td><td><code>该ip已被封禁，原因：bulk probe guard: ip … requested 5 distinct models in 60s (offense 3)</code></td><td class="ok"><code>auth</code><br/>→ 立即放弃</td><td><b>归因错了，但处置对了</b>。真实原因是探测太密触发了反滥用封禁，不是密钥问题</td></tr>
+      </tbody>
+    </table></div>
+    <p>三条各有一课。</p>
+    <p><strong>现场①是分类器的经典盲区：只看状态码，不看响应体里的 <code>code</code>。</strong>503 是「服务不可用」的标准脸，但套子里装的是 <code>model_not_found</code>——这是一个装错信封的 404。这类错误在聚合中转站里极其常见，因为中转站自己不认哪个模型存在，得回源问，回源失败时它只能先给你个 503。修法很朴素：<em>先读 body 的 error.code，再读状态码</em>，两者矛盾的以语义为准。</p>
+    <p><strong>现场②是白重试的活标本。</strong>探针的日志完整记了两次尝试：第 1 次 469ms 收到 500，第 2 次 511ms 收到同一个 500，<code>request id</code> 都不同——说明对面不是缓存了错误，是真的每次都走到同一行 <code>not implemented</code>。<code>convert_request_failed</code> 是「这个中转站不支持把 OpenAI 协议转成 Anthropic」的明确宣言，它是<strong>配置性失败</strong>，重试一百次也是同一结果。这类错误该单独成类（<code>unsupported</code>），药方是「换渠道」而不是「重试」。</p>
+    <p><strong>现场③最妙：归因错了，处置对了。</strong>探针把它归为 <code>auth</code>（403 → 鉴权），但原文写得很清楚：IP 因为 60 秒内请求 5 个不同模型被反滥用系统封了，<code>offense 3</code> 说明已经是第三次犯。归因确实错了——但这错归因带来的处置（立即放弃、不重试）恰好是对的，因为对反滥用封禁，<em>再打一次只会加重罪状</em>。这引出一个比「分类准不准」更深的教训：<strong>分类的价值在决定动作，不在于命名正确</strong>。如果分类器的类别名和动作是松耦合的（auth → 换人），那么即使名字错，只要动作对，系统仍然健壮；反过来说，一个 100% 命名正确但动作错配的分类器，会精确地做错每一次。</p>
+    <div class="note"><b>顺带一条：</b><code>offense 3</code> 这个字段本身是金矿——它告诉你能不能重试，以及重试的代价。可惜分类器没读它。真实世界的错误结构里，这种「元数据比状态码更有用」的字段到处都是（<code>retry-after</code>、<code>reset_time</code>、<code>x-ratelimit-remaining</code>）。读它们，比背状态码表有用得多。</div>
+
+    <div class="demo" id="d1">
+      <div class="demo-head"><span class="demo-tag">DEMO 01 · 错误分类台</span><span class="demo-title">六类分诊，两种药<span class="hint">点击左侧病例</span></span></div>
+      <div class="demo-body">
+        <div class="ec-wrap">
+          <div class="ec-feed" id="d1-feed"></div>
+          <div>
+            <div class="ec-raw" id="d1-raw"></div>
+            <label class="switch" style="margin-bottom:10px"><input type="checkbox" id="d1-readbody" checked/> 读响应体里的 error.code（修盲区）</label>
+            <div class="ec-cols">
+              <div class="ec-col"><h5>① 分类器判定 <b id="d1-kind">—</b></h5><div id="d1-verdict"></div><div class="ec-note" id="d1-why"></div></div>
+              <div class="ec-col"><h5>② 处置</h5><div class="ec-retry" id="d1-action"></div><div class="ec-note" id="d1-action-why"></div></div>
+              <div class="ec-col"><h5>③ 现实的代价</h5><div class="ec-note" id="d1-cost"></div></div>
+            </div>
+            <div class="ec-readout">
+              <div>被判可重试的类型<b id="d1-retryable">2</b></div>
+              <div>本台病例<b id="d1-total">9</b></div>
+              <div>盲区命中<b id="d1-blind">3</b></div>
+            </div>
+            <div class="ec-blind" id="d1-blindnote"></div>
+          </div>
+        </div>
+      </div>
+      <div class="demo-foot">病例数据来自 <b>probe.db</b> 的真实探测记录（IP 已脱敏）；分类规则照抄 <b>classifyError()</b> 与 <b>RETRYABLE</b>。开关「读响应体」模拟把 <code>error.code</code> 纳入判定后的行为变化——这就是 503 壳包 model_not_found 的修法。</div>
+    </div>

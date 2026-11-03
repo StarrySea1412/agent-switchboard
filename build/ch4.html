@@ -1,0 +1,88 @@
+<section class="chapter" id="ch4">
+  <div class="ch-head">
+    <div class="ch-num"><b>04</b>CHAPTER<br/>00:03</div>
+    <div class="ch-title">
+      <h2>按角色路由，不是全局一个模型</h2>
+      <p>「识别餐盘」和「编排一周计划」不是同一种活儿。一条全局优先级链，等于让总机把所有的来电插进同一排插孔</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">很多 Agent 的路由配置长这样：<code>fallbacks = ["gpt-4o", "claude", "qwen"]</code>。一条链，所有请求排着队。这在「只有一个模型」的时代是合理的抽象，但在多模态 Agent 里立刻出问题——<strong>图像任务和文本任务对模型的要求根本不一样</strong>。一个只支持文本的模型排进图像链，它不是在回退，它是在拒绝服务。标本 A 把它拆成了三条链，一条一个角色（store.js · L752，有删节）：</p>
+    <div class="code"><div class="code-bar"><span>store.js · DEFAULT_ROUTE · L746–756（原样注释）</span><b>三角色三链</b></div>
+<pre><span class="c">/**
+ * 路由：三类任务各配一条「优先级链」，而不是单一模型。
+ * 参考 LiteLLM 的 fallbacks 数组 —— 链上的模型按顺序尝试，前面的不可用就往后走。
+ * 写成数组而不是单个 ID，是因为真实场景里一个模型挂掉需要多级兜底，
+ * 而且「首选贵模型 + 次选便宜模型」本身就是常见的成本策略。
+ */</span>
+<span class="k">const</span> DEFAULT_ROUTE = {
+  vision: [<span class="s">"builtin-mock"</span>],   <span class="c">// 图像判断：识别餐盘、估算热量与宏量</span>
+  plan:   [<span class="s">"builtin-mock"</span>],   <span class="c">// 计划编排：生成与重排一周饮食训练</span>
+  chat:   [<span class="s">"builtin-mock"</span>],   <span class="c">// 对话问答：日常咨询与计划解释</span>
+};</pre></div>
+    <p>注意那条注释的第二半——<strong>「首选贵模型 + 次选便宜模型」本身就是常见的成本策略</strong>。这句话比它看起来重要：路由不只是容错，它还是<em>定价权</em>。同一件事，先拿贵模型打头阵保证质量，挂了再落到便宜模型保证可用；反过来（先用便宜的，不行再升贵）也合法，取决于你更怕质量掉还是更怕账单爆。一条链的顺序，就是一次产品决策，而不是一次技术配置。</p>
+
+    
+    <div class="fig"><div class="frame">
+      <img src="assets/art/ch4.webp" alt="大型木质插孔板分三排区域，彩色接线插在不同插孔上，单眼折纸鸟在板旁思考" width="1152" height="832" loading="lazy" style="width:100%;border:1px solid var(--line)"/>
+    </div><figcaption><span><b>FIG. 03</b> 三排插孔：图像、计划、对话各走各的链</span><span>INK &amp; GOUACHE / 2026</span></figcaption></div>
+
+<h3>「能力」是链上的硬门槛</h3>
+    <p>如果三条链只是三份名单，那问题还在：用户手动把纯文本模型塞进 vision 链怎么办？标本的答案是让能力成为漏斗上的筛子（models.js · <code>resolveChain()</code> · L657–670，有删节）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · resolveChain() · L657</span><b>链路装配：过滤 + 兜底</b></div>
+<pre><span class="f">resolveChain</span>(role) {
+  <span class="k">const</span> route = <span class="k">this</span>.<span class="f">route</span>();
+  <span class="k">const</span> out = [];
+  <span class="k">const</span> <span class="f">push</span> = (m) => { <span class="k">if</span> (m && !out.<span class="f">some</span>((x) => x.id === m.id)) out.<span class="f">push</span>(m); };
+
+  <span class="k">for</span> (<span class="k">const</span> id <span class="k">of</span> route[role] || []) {
+    <span class="k">const</span> m = <span class="k">this</span>.<span class="f">byId</span>(id);
+    <span class="k">if</span> (!m || !m.enabled) <span class="k">continue</span>;
+    <span class="k">if</span> (role === <span class="s">"vision"</span> && !m.caps?.vision) <span class="k">continue</span>;   <span class="c">// 纯文本模型不能接图像任务</span>
+    <span class="f">push</span>(m);
+  }
+  <span class="f">push</span>(<span class="k">this</span>.<span class="f">byId</span>(MOCK_MODEL.id));                          <span class="c">// 最终兜底：永不失败</span>
+  <span class="k">return</span> out;
+}</pre></div>
+    <p>这段代码里藏着三个决定，每一个都值得单独说：</p>
+    <ul>
+      <li><strong>能力过滤是静默的，不是报错的。</strong>不支持的模型被跳过，不抛异常、不弹警告。因为「这个模型不会看图」不是错误，是事实——链上还有下一个。</li>
+      <li><strong>去重用 ID，不用对象。</strong><code>out.some(x => x.id === m.id)</code>——同一个模型被用户手动写两次，只留一次。链是<em>优先级序列</em>，不是<em>调用次数</em>。</li>
+      <li><strong>兜底的 push 在最外层，无条件执行。</strong>不管前面有多少个模型被过滤光，模拟引擎一定在链尾。这就是 ch1 说的「永不失败的接线员」在代码里的落点。</li>
+    </ul>
+
+    <h3>别让链变空：删除、迁移、老数据</h3>
+    <p>配置是会腐化的。用户删掉一个模型，它可能在三条链里各躺着一次；留着的空位就是<strong>死链</strong>——界面显示「这个角色有链」，实际指向一个不存在的 ID。标本的 <code>remove()</code> 专门处理这个（models.js · L590–610，有删节）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · remove() · L590</span><b>删除后的链修复</b></div>
+<pre><span class="c">// 从所有角色的回退链里摘掉，避免留下指向空模型的死链</span>
+<span class="k">const</span> route = <span class="k">this</span>.<span class="f">route</span>();
+<span class="k">let</span> changed = <span class="k">false</span>;
+<span class="k">for</span> (<span class="k">const</span> k <span class="k">of</span> <span class="f">Object</span>.keys(route)) {
+  <span class="k">if</span> (route[k].<span class="f">includes</span>(id)) {
+    route[k] = route[k].<span class="f">filter</span>((x) => x !== id);
+    changed = <span class="k">true</span>;
+  }
+}
+<span class="k">if</span> (changed) {
+  <span class="c">// 摘掉最后一个模型后链路会变空。空链在界面上表现为「没有选中任何模型」，
+  // 既难理解也没意义 —— 回落成默认链（内置引擎），语义等价且状态可读。</span>
+  <span class="k">for</span> (<span class="k">const</span> k <span class="k">of</span> <span class="f">Object</span>.keys(route)) {
+    <span class="k">if</span> (!route[k].<span class="f">length</span>) route[k] = [...(DEFAULT_ROUTE[k] || [MOCK_MODEL.id])];
+  }
+  Store.<span class="f">write</span>(KEYS.route, route);
+}</pre></div>
+    <p><strong>「空链在界面上表现为『没有选中任何模型』，既难理解也没意义」</strong>——这句注释是产品思维的证据。技术上，空链完全合法：遍历零个元素，然后到链尾兜底。但它会在 UI 上留下一个无法解释的空白状态，用户会以为坏了。所以代码主动把它规范化回默认链，并明确注释了动机是「状态可读」，不是「防止崩溃」。<em>数据规范化不只为了程序不炸，也为了人能读懂。</em></p>
+    <p>还有一层是时间：老版本存下的路由数据长什么样？早期版本用单字符串（不是数组），以及一个全局 <code>route.fallback</code> 字段。这两个格式都得认得（models.js · <code>route()</code> · L617–628）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · route() · L617</span><b>老格式兼容</b></div>
+<pre><span class="k">for</span> (<span class="k">const</span> role <span class="k">of</span> [<span class="s">"vision"</span>, <span class="s">"plan"</span>, <span class="s">"chat"</span>]) {
+  <span class="k">const</span> v = raw[role] ?? DEFAULT_ROUTE[role];
+  out[role] = (<span class="f">Array</span>.<span class="f">isArray</span>(v) ? v : [v]).<span class="f">filter</span>(<span class="f">Boolean</span>);   <span class="c">// 单字符串 → 数组</span>
+  <span class="c">// 早期版本用 route.fallback 表示全局兜底，迁移成追加到每条链尾</span>
+  <span class="k">const</span> legacy = raw.fallback;
+  <span class="k">if</span> (legacy && !out[role].<span class="f">includes</span>(legacy)) out[role].<span class="f">push</span>(legacy);
+}</pre></div>
+    <p>「迁移成追加到每条链尾」——旧字段不是被丢弃，而是被赋予了新语义下的合理位置。这类迁移策略值得抄：<strong>旧数据不删，找它在新结构里的等价位置</strong>。删掉的后果是用户升级后发现「我配的那个兜底模型不见了」，而他们大概率不会再来提 issue。</p>
+    <div class="note"><b>一个边界：</b>这三条链是<em>角色</em>维度（vision/plan/chat），不是<em>任务</em>维度。真实产品里可能有更细的切分（摘要、抽取、翻译各一条链）。标本选了三个角色，因为它的产品就三个场景——<strong>链的粒度要贴合产品，而不是贴合「理论上应该有多细」</strong>。</div>
+    <p>链装配好了，接下来是最难的一段：请求落到链上，具体怎么走。下一章逐行走读 <code>invoke()</code>——那是整个接入层的心脏。</p>
+  </div>
+</section>

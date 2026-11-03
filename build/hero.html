@@ -1,0 +1,67 @@
+<header class="wrap masthead">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#3a7d5c" stroke-width="1.4"/><circle cx="8" cy="9" r="1.7" stroke="#96762f" stroke-width="1.3"/><circle cx="16" cy="9" r="1.7" stroke="#96762f" stroke-width="1.3"/><path d="M8 10.7v6.3M16 10.7v6.3M8 17h8" stroke="#c04a2c" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+    <span>造物手记 <small>VOL.10</small></span>
+  </div>
+  <div class="edition">
+    <span class="pack"><i class="pack-dot" aria-hidden="true"></i>SWITCHBOARD / 总机台</span>
+    <span>BOARD 10 · 2026.11</span>
+  </div>
+</header>
+
+<section class="wrap hero">
+  <div>
+    <p class="eyebrow"><span>FIELD NOTES</span>一次造物式的解剖</p>
+    <h1>给 Agent<br/><em>配一台总机</em><span class="sub">模型路由与降级的解剖——从一次凌晨的 503 假死讲起：错误分类、按角色路由、双层回退、熔断冷却、探测留痕，和「不许自动降级」背后的价值观</span></h1>
+    <div class="dek-wrap">
+      <p class="dek-tag">本片提要</p>
+      <p class="dek">任何一个跑了一阵子的 Agent，手里都攥着一份模型名单：几家官方 API、若干个中转站、一个本地的 Ollama。名单越长，故障越像天气——你永远不知道下一个 503 落在谁头上。这篇拿两个真实标本做解剖：一个 813 行的模型接入层，一台留痕到逐毫秒的渠道探针，把「模型挂了之后发生什么」拆成可以核对的七段——每一类错误该吃药还是该换人、请求怎么在回退链上逐级下坠、熔断器怎么替你记住谁在装死。</p>
+    </div>
+    <div class="hero-meta">
+      <span class="pill"><b>7</b> 章解剖</span>
+      <span class="pill"><b>4</b> 枚可玩小样</span>
+      <span class="pill"><b>813</b> 行 · 接入层标本</span>
+      <span class="pill"><b>23</b> 条真实探测留痕</span>
+    </div>
+  </div>
+  <figure class="art">
+    <div class="screen">
+      <div class="screen-img">
+        <img src="assets/art/hero.webp" alt="单眼折纸鸟戴着话务员耳麦坐在老式电话总机前，爪子捏着一根黄色接线，插向插孔板上亮着的一排插孔" width="1152" height="832"/>
+      </div>
+      <div class="tc-bar"><span>SWITCHBOARD 10</span><span class="tc">CLASSIFY · ROUTE · FALLBACK</span></div>
+    </div>
+    <figcaption><span><b>FIG. 00</b> 总机台：每一次来电（请求）都被接进一个还活着的插孔（模型）</span><span>INK &amp; GOUACHE / 2026</span></figcaption>
+  </figure>
+</section>
+
+<section class="stats" aria-label="关键数字">
+  <div class="wrap stats-inner">
+    <div class="stat"><b>6<span>类</span></b><small>错误分类：限流 / 抖动 / 鉴权 / 不存在 / 不合法 / 未知——六种病，两种药</small></div>
+    <div class="stat"><b>2<span>层</span></b><small>回退包装：同模型退避重试在外，换模型在内——顺序反了就是灾难</small></div>
+    <div class="stat"><b>60<span>s</span></b><small>熔断冷却：连败 3 次即停机检查，到期自动放行再试一把</small></div>
+    <div class="stat"><b>35.3<span>s</span></b><small>唯一一次成功探测的全链路耗时：鹈鹕骑自行车，花了 $0.026</small></div>
+  </div>
+</section>
+
+<div class="wrap opening">
+  <div class="prose">
+    <div class="jd-card">
+      <p class="jd-tag">INCIDENT LOG · 2026.10.17 深夜（真实事件，本机记录）</p>
+      <p class="jd-text">凌晨，三个 GPT 系生图渠道<strong>同时 503</strong>。像是约好的：响应快得体贴，错误信息一模一样。排队重试、换渠道、再重试，全部撞墙。以为这一晚就这么交代了，结果深夜十二点后——<em>三个渠道又同时活了</em>，一张没丢。</p>
+      <p class="jd-note" style="margin-top:10px">第二天复盘，真正让人后背发凉的不是挂掉，而是这两件事：①当时没有任何一个组件「记得」谁挂过——每个调用都是第一次见面；②如果代码里写了「失败就换下一个渠道」，那晚的图会被悄悄降级到完全不同质量的模型上，<strong>而没人会知道</strong>。</p>
+    </div>
+    <p class="lead">总机接线员是上个时代最了解「降级」的人。来电排着队，插孔有限，有的分机占线，有的干脆拔了线。她的工作不是祈祷线路都活着，而是一套刻在肌肉里的流程：先听忙音还是空号（<strong>错误分类</strong>），忙音就等会儿再拨（<strong>重试</strong>），空号立刻换一个号码（<strong>回退</strong>），老占线的号码先记在小本上别再白拨（<strong>熔断</strong>），每一通电话都记台账（<strong>留痕</strong>）。这篇要解剖的，就是给 Agent 配的这样一台总机：一个模型接入层加一台渠道探针，八百多行真实代码，二十三条真实探测记录，没有一处黑盒。</p>
+    <p class="scope">标本 A · fuel-agent 模型接入层（本机自研原型，assets/js/models.js，813 行 + store.js 配置层）<br/>标本 B · cc-probe 渠道探针（本机自研，engine.py 726 行，probe.db 真实探测数据 23 条）<br/>所有引文核对到真实函数与行号；小样全部确定性：参数摊在明面上，读者可以自己推翻。</p>
+    <div class="toc-head"><span>CONTENTS · 七段解剖</span><span>CLASSIFY → ROUTE → FALLBACK → ACCOUNT</span></div>
+    <nav class="toc">
+      <a href="#ch1"><i>01</i><span>写死的模型是单点故障<small>总机为什么必须存在：把模型从「依赖」变成「插拔资源」</small></span></a>
+      <a href="#ch2"><i>02</i><span>协议适配器：三家三种方言<small>统一消息格式与四个适配器，token 字段名的三家收账法</small></span></a>
+      <a href="#ch3"><i>03</i><span>错误要分类：不同错不同药<small>六类正则、两套口径、一个真实的分类盲区</small></span></a>
+      <a href="#ch4"><i>04</i><span>按角色路由，不是全局一个模型<small>三条优先级链：贵模型打头，便宜模型殿后</small></span></a>
+      <a href="#ch5"><i>05</i><span>回退的两层包装<small>invoke() 逐行走读：重试包在换模型里，而不是反过来</small></span></a>
+      <a href="#ch6"><i>06</i><span>健康度从哪来：探测与留痕<small>一台逐毫秒留痕的探针，和被反封禁的战史</small></span></a>
+      <a href="#ch7"><i>07</i><span>成本账本与诚实的兜底<small>fallbackRate、明示模拟引擎，和「不许自动降级」</small></span></a>
+    </nav>
+  </div>
+</div>

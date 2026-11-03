@@ -1,0 +1,26 @@
+<div class="wrap epilogue" id="closing">
+  <h2>结语：总机的价值不在接通，在如实</h2>
+  <p>做完这台总机，回头看那条凌晨 503 的战报，感觉变了。真正的问题从来不是「渠道会挂」——那是天气，无法管理；能管理的是<strong>挂了之后你的系统记不记得、说不说、停下来还是硬撑</strong>。三个部件把这件事分开承担：错误分类负责判断「该等还是该换」，熔断负责记住「谁已经说不行了」，账本负责把每一次判断的后果如实留下。它们加起来构成一种比「高可用」更朴素的品质——<em>可解释</em>。</p>
+  <div class="rules">
+    <div class="rule"><b>RULE 01 · 先分诊，再开药</b><p>不分类的重试会把「密钥失效」和「网络抖动」吃同一副药：前者白等，后者白等。六类正则、两张药方（重试 / 换人）——这套分诊台是整个容错体系的底座，也是唯一一处「写错就全错」的地方。</p></div>
+    <div class="rule"><b>RULE 02 · 重试包在换人里，别反过来</b><p>同模型退避重试是内层，换模型是外层。顺序反了，一次抖动会震遍整条链，还会让熔断计数错算到无辜模型头上。嵌套顺序不是风格问题，是正确性问题。</p></div>
+    <div class="rule"><b>RULE 03 · 降级必须可见，兜底必须明示</b><p>fallbackRate、fellBack、skipped、mock:true——四个字段加一个布尔，就是「我不假装一切正常」的代码形态。静默降级比失败更坏；明示模拟比错误堆栈更诚实。</p></div>
+  </div>
+  <div class="limits"><b>这篇没解决的：</b>成本是<strong>估算</strong>不是账单（单价靠预设与手填，中转站的实际计费口径、阶梯价、缓存折扣都没有纳入）；语义级降级未覆盖（换模型后输出质量差多少，本篇没有度量方法——那是 [[agent-eval]] 的题目）；多进程/多机共享熔断状态未涉及（localStorage 只管单个浏览器）；探针的反封禁策略只到「按 host 排队」这一层，真实对抗反滥用系统是另一个话题。</div>
+  <div class="links">
+    <a href="https://github.com/BerriAI/litellm" target="_blank" rel="noopener">LiteLLM（本文容错口径的参考）</a>
+    <a href="https://github.com/farion1231/cc-switch" target="_blank" rel="noopener">cc-switch（探针的渠道来源）</a>
+    <a href="https://starrysea1412.github.io/agent-signals/" target="_blank" rel="noopener">上期 · VOL.08 Agent 的三条信号线</a>
+    <a href="https://starrysea1412.github.io/canvas-editor-anatomy/" target="_blank" rel="noopener">VOL.09 把文字画成像素</a>
+    <a href="https://starrysea1412.github.io/agent-eval/" target="_blank" rel="noopener">VOL.06 给 Agent 打分</a>
+    <a href="https://starrysea1412.github.io/agent-kernel/" target="_blank" rel="noopener">VOL.04 Agent 内核</a>
+  </div>
+</div>
+
+<footer class="wrap site-foot">
+  <div>
+    <div>造物手记 VOL.10 · 给 Agent 配一台总机</div>
+    <div style="margin-top:5px">SWITCHBOARD / 2026.11 / 单文件 · 零依赖 · 确定性小样</div>
+  </div>
+  <div class="foot-note">标本 A fuel-agent 与本机自研原型，标本 B cc-probe 渠道探针；文中源码引文均核对到真实函数与行号，为可读性有删节与换行调整。探针账本 23 条记录取自 probe.db 实际探测数据（IP 与密钥已脱敏），错误文案原文照抄。四枚小样为确定性模型：无外部随机、参数可调、行为可复现。字体为 LXGW 文楷（OFL 许可，见 assets/fonts/OFL.txt）。插图由 GPT 系图像模型生成。</div>
+</footer>

@@ -1,0 +1,182 @@
+<section class="chapter" id="ch5">
+  <div class="ch-head">
+    <div class="ch-num"><b>05</b>CHAPTER<br/>00:04</div>
+    <div class="ch-title">
+      <h2>回退的两层包装</h2>
+      <p>重试包在换模型里面，而不是反过来——这个顺序一旦写反，代价是数量和等待时间的双重爆炸</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">现在请求已经站在回退链的门口。剩下的问题只有一个，却是整台总机最贵的问题：<strong>先重试还是先换人？</strong>答案不是二选一——是<em>嵌套</em>。标本的注释直接交代了出处（models.js · L705–712）：</p>
+    <div class="pull">流程参考 LiteLLM Router 的两层包装：<br/>function_with_fallbacks（换模型）<b>包住</b> function_with_retries（同模型重试）<br/>即：先在一个模型上对「瞬时错误」退避重试，重试完还是不行才换下一个模型。</div>
+    <p>为什么是这个顺序？把两层反过来算一遍就明白了。设链上有 3 个模型，每个模型最多重试 2 次：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>包装方式</th><th>最坏情况请求数</th><th>失败时的等待结构</th><th>后果</th></tr></thead>
+      <tbody>
+        <tr><td><b>重试包在换人里</b>（正确）</td><td class="num">3 × 3 = 9</td><td>模型 A 重试完 → 模型 B 重试完 → 模型 C</td><td>某个模型短暂抖动能被自己吸收，不惊动别人</td></tr>
+        <tr><td>换人包在重试里（错误）</td><td class="num">3 × 3 = 9</td><td>整条链跑一轮 → 再跑一轮 → 再跑一轮</td><td><b>每个模型都被打 3 次</b>，一次网络抖动会把全链震三遍</td></tr>
+      </tbody>
+    </table></div>
+    <p>请求数一样，灾难在别处：<strong>错误的那版会把「本来就快好的模型」和「真挂了的模型」一视同仁地反复打</strong>。更要命的是熔断器——如果熔断计数在整链重试里累计，一次抖动就能把三个健康模型同时打入冷却。而下文会看到，熔断计数必须是<em>按模型</em>的。</p>
+
+    <h3>invoke() 逐行走读</h3>
+    <p>完整函数 87 行，这里只留骨架，但关键语句一条没删（models.js · L713–800，有删节）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · invoke() · L713</span><b>外层：换模型 / 内层：同模型重试</b></div>
+<pre><span class="k">async</span> <span class="f">invoke</span>(role, req) {
+  <span class="k">const</span> chain = <span class="k">this</span>.<span class="f">resolveChain</span>(role);
+  <span class="k">const</span> t0 = performance.<span class="f">now</span>();
+  <span class="k">const</span> skipped = [], failures = [];
+  <span class="k">let</span> lastErr = <span class="s">""</span>;
+
+  <span class="k">for</span> (<span class="k">let</span> i = <span class="n">0</span>; i &lt; chain.length; i++) {           <span class="c">// ← 外层：逐模型</span>
+    <span class="k">const</span> m = chain[i];
+
+    <span class="k">if</span> (!m.builtin &amp;&amp; Health.<span class="f">isCooling</span>(m.id)) {           <span class="c">// ← 冷却直接跳过</span>
+      <span class="k">const</span> st = Health.<span class="f">state</span>(m.id);
+      skipped.<span class="f">push</span>({ id: m.id, label: m.label, leftMs: st.coolingLeftMs, kind: st.lastKind });
+      <span class="k">continue</span>;
+    }
+
+    <span class="k">const</span> adapter = Adapters[PROVIDERS[m.provider]?.adapter || <span class="s">"openai"</span>];
+    <span class="k">let</span> attempt = <span class="n">0</span>;
+    <span class="k">for</span> (; attempt &lt;= RESILIENCE.maxRetries; attempt++) {   <span class="c">// ← 内层：同模型重试</span>
+      <span class="k">try</span> {
+        <span class="k">const</span> out = <span class="k">await</span> adapter.<span class="f">chat</span>(m, req);
+        Health.<span class="f">note</span>(m.id, <span class="k">true</span>);
+        <span class="c">/* ... 记账、写 CallLog、返回 { fellBack: i &gt; 0, retries: attempt, skipped, failures } */</span>
+        <span class="k">return</span> { text: out.text, model: m.label, fellBack: i &gt; <span class="n">0</span>, retries: attempt, failures };
+      } <span class="k">catch</span> (e) {
+        <span class="k">const</span> kind = <span class="f">classifyError</span>(msg);
+        lastErr = <span class="s">`${m.label}：${msg}`</span>;
+        <span class="c">// 瞬时错误 → 同一模型退避重试；其余错误 → 立刻换模型，重试没有意义</span>
+        <span class="k">if</span> (RETRYABLE.<span class="f">has</span>(kind) &amp;&amp; attempt &lt; RESILIENCE.maxRetries) {
+          <span class="k">await</span> <span class="f">sleep</span>(<span class="f">backoffMs</span>(attempt));
+          <span class="k">continue</span>;                                     <span class="c">// ← 不记失败，继续内层循环</span>
+        }
+        Health.<span class="f">note</span>(m.id, <span class="k">false</span>, kind, msg);          <span class="c">// ← 只有走到这里才记一次失败</span>
+        failures.<span class="f">push</span>({ id: m.id, label: m.label, kind, error: msg, retries: attempt });
+        <span class="k">break</span>;                                          <span class="c">// ← 出内层，外层换下一个模型</span>
+      }
+    }
+  }
+  <span class="c">/* 全链失败：写一条 ok:false 的 CallLog，返回失败结构（含 failures / skipped / kind）*/</span>
+}</pre></div>
+    <p>这段代码有四个设计点，摊开说：</p>
+    <ol>
+      <li><strong>「可重试」不等于「不记失败」。</strong>看两个 <code>Health.note</code> 的位置：成功时记一次 good；重试分支 <em>只 sleep 不记</em>，只有真正放弃这个模型时才 <code>note(false)</code>。这意味着<strong>一次抖动后的成功重试，不会在健康度上留任何污点</strong>。反过来如果每次失败都记，一个偶发 429 就能把好模型打冷。</li>
+      <li><strong><code>fellBack: i &gt; 0</code> 是唯一诚实的回退信号。</strong>不是「有没有重试」（<code>retries</code>），而是「最终用的是不是链上第一个」。这两个数字分开记录：重试了但仍是首选模型，和重试到第三个模型才成功，是完全不同的两件事。</li>
+      <li><strong>冷却中的模型"留在链里"。</strong>这段代码没有把冷却模型从链上删掉——它 <code>continue</code> 跳过，并把这条跳过<em>如实记进 <code>skipped</code> 数组</em>。<code>resolveChain()</code> 的注释说明了动机：<em>「这样界面上能看到『它被跳过了』，而不是莫名其妙消失」</em>。</li>
+      <li><strong>失败也要落一条日志。</strong>全链失败的收尾照样 <code>CallLog.push({ ok: false, ... })</code>。没成功就不记——那是最常见的埋点漏洞，也是事故复盘时最缺的一页。</li>
+    </ol>
+
+    <h3>退避为什么要加抖动</h3>
+    <p>重试不是「立刻再打一次」。两次失败之间要等，而且越等越久——标本的退避函数只有五行（models.js · L441–445），注释说了一个常被忽略的理由：</p>
+    <div class="code"><div class="code-bar"><span>models.js · backoffMs() · L441</span><b>指数退避 + 抖动</b></div>
+<pre><span class="c">/** 指数退避 + 抖动。抖动是为了避免多个角色同时重试造成新的尖峰。 */</span>
+<span class="k">function</span> <span class="f">backoffMs</span>(attempt) {
+  <span class="k">const</span> base = <span class="f">Math</span>.<span class="f">min</span>(RESILIENCE.backoffBaseMs * <span class="n">2</span> ** attempt, RESILIENCE.backoffMaxMs);
+  <span class="k">return</span> <span class="f">Math</span>.<span class="f">round</span>(base * (<span class="n">0.8</span> + Seed.<span class="f">rand</span>() * <span class="n">0.4</span>));
+}</pre></div>
+    <p>参数在配置层：<code>backoffBaseMs: 400</code>、<code>backoffMaxMs: 4000</code>、<code>maxRetries: 2</code>（store.js · L764）。于是等待序列是 <code>400ms → 800ms</code>（封顶 4s），每档再乘 0.8–1.2 的抖动系数。</p>
+    <p><strong>抖动防的是「惊群」</strong>：如果三个角色在同一个 503 后都立刻重试，它们会同时到达，把刚恢复的渠道再打趴一次——这就是「重试风暴」，也是很多中转站限流策略的直接成因（见 ch3 现场③：<em>60 秒 5 个模型就被封 IP</em>）。把重试时间打散在 ±20% 的窗口里，是最便宜的解药。</p>
+    <p>而 <code>Seed.rand()</code> 而非 <code>Math.random()</code> 这个细节很关键：<strong>种子化的随机数让小样的时间轴可以逐像素复现</strong>——这正是本章 DEMO 02 能画出确定性时间轴的原因，也是本系列每篇文章的工程底线。</p>
+
+    <div class="demo" id="d2">
+      <div class="demo-head"><span class="demo-tag">DEMO 02 · 回退链推演器</span><span class="demo-title">逐级下坠的请求<span class="hint">改失败模式再推演</span></span></div>
+      <div class="demo-body">
+        <div class="fb-wrap">
+          <div>
+            <div class="fb-chain" id="d2-chain"></div>
+            <div class="controls" style="margin-top:12px;border-bottom:0;padding-bottom:0;margin-bottom:0">
+              <div class="ctl-btn">
+                <button class="run" id="d2-run">推演一次</button>
+                <button class="ghost" id="d2-reset">重置</button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="fb-timeline" id="d2-tl"><div class="fb-idle">—— 按「推演一次」看这通电话怎么走 ——</div></div>
+            <div class="fb-readout">
+              <div>最终用的<b id="d2-used">—</b></div>
+              <div>是否回退<b id="d2-fb">—</b></div>
+              <div>同模型重试<b id="d2-retries">—</b></div>
+              <div>总耗时<b id="d2-ms">—</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="demo-foot">链上三个位置（首选 / 次选 / 内置引擎）。每个位置可选失败模式：<b>抖动自愈</b>（第 1 次失败、重试成功）、<b>持续抖动</b>（3 次全失败→换人）、<b>鉴权失败</b>（立即换人，不重试）、<b>冷却中</b>（直接跳过）。推演严格照抄 <b>invoke()</b> 的循环结构与 <b>backoffMs()</b> 公式（固定种子，时间轴可复现）。</div>
+    </div>
+
+    
+    <div class="fig"><div class="frame">
+      <img src="assets/art/ch5.webp" alt="黄色电话线沿三个插孔位下坠：第一孔断裂、第二孔虚接、第三孔稳稳接住点亮灯泡" width="1152" height="832" loading="lazy" style="width:100%;border:1px solid var(--line)"/>
+    </div><figcaption><span><b>FIG. 04</b> 一次请求的下坠路线：重试、换人、兜底</span><span>INK &amp; GOUACHE / 2026</span></figcaption></div>
+
+<h3>熔断：把「老占线」记在小本上</h3>
+    <p>如果每次请求都要把整条链打一遍才罢休，那一个真死掉的模型会被反复捶打——对双方都不好。熔断器就是那本小本子（models.js · L342–410，注释原文）：</p>
+    <div class="pull">熔断器的状态表，口径参考 LiteLLM Router 的 allowed_fails / cooldown_time。<br/>连续失败 allowedFails 次 → 进入冷却；冷却期内跳过该模型，到期自动放行。<br/>持久化到 localStorage，<b>这样刷新页面不会「忘记」某个模型刚刚挂过</b>。</div>
+    <p>核心是 <code>note()</code> 的两条路径（L374–393，有删节）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · Health.note() · L374</span><b>计数与冷却</b></div>
+<pre><span class="f">note</span>(id, ok, kind = <span class="s">""</span>, error = <span class="s">""</span>) {
+  <span class="k">const</span> all = <span class="k">this</span>.<span class="f">read</span>();
+  <span class="k">const</span> h = all[id] || { fails: <span class="n">0</span>, okCount: <span class="n">0</span>, failCount: <span class="n">0</span>, cooldownUntil: <span class="n">0</span> };
+  <span class="k">if</span> (ok) {
+    h.fails = <span class="n">0</span>;                    <span class="c">// 成功清零连败</span>
+    h.cooldownUntil = <span class="n">0</span>;           <span class="c">// 顺手解除冷却</span>
+    h.okCount = (h.okCount || <span class="n">0</span>) + <span class="n">1</span>;
+  } <span class="k">else</span> {
+    h.fails = (h.fails || <span class="n">0</span>) + <span class="n">1</span>;
+    h.failCount = (h.failCount || <span class="n">0</span>) + <span class="n">1</span>;
+    h.lastKind = kind;
+    h.lastError = <span class="f">String</span>(error).<span class="f">slice</span>(<span class="n">0</span>, <span class="n">200</span>);
+    <span class="k">if</span> (h.fails &gt;= RESILIENCE.allowedFails)
+      h.cooldownUntil = Seed.<span class="f">clock</span>().<span class="f">getTime</span>() + RESILIENCE.cooldownMs;
+  }
+  all[id] = h; <span class="k">this</span>.<span class="f">write</span>(all);
+  <span class="k">return</span> h;
+}</pre></div>
+    <p>几个值得停下的点：</p>
+    <ul>
+      <li><strong><code>fails</code> 与 <code>failCount</code> 是两个数。</strong>前者是<em>连续</em>失败（成功即清零），后者是<em>累计</em>失败（永不清零）。熔断只认连续失败——因为它判断的是「这台机器现在还活着吗」，不是「它历史上出过多少次问题」。累计值留着做健康度评分。</li>
+      <li><strong>冷却是一段绝对时间戳，不是布尔。</strong><code>cooldownUntil</code> 存的是「什么时候可以再试」，而不是「现在坏没坏」。这让「到期自动放行」无需定时器：每次读状态时比较 <code>until &gt; now</code> 就够了（<code>state()</code> 里的 <code>cooling</code>/<code>coolingLeftMs</code>）。</li>
+      <li><strong><code>lastError</code> 截断 200 字符。</strong>和 <code>readErr()</code> 的 180 一致——错误体不能无限制地进存储。</li>
+      <li><strong>持久化到 localStorage。</strong>刷新页面不清零，是因为用户的刷新往往发生在「刚看到报错，想再试一次」的时刻。如果冷却记忆随刷新清空，用户的重试就变成了对故障模型的又一轮捶打。</li>
+    </ul>
+    <p><strong>「半开」怎么实现？</strong>代码里没有显式的 half-open 状态——它靠<em>到期后自然放行</em>实现：冷却到期，模型回到链上参与竞争，成功即清零，失败则 <code>fails</code> 继续累加、再次撞线冷却（注意此时 <code>fails</code> 还没被清零，所以下一次失败只需一次就重新冷却）。这是一个比显式三态机更简单的等价实现，代价是「放行后第一次失败就直接重冷」，而不是「先试 N 次」。<em>简单和精确之间的取舍，这里选了简单。</em></p>
+
+    <div class="demo" id="d3">
+      <div class="demo-head"><span class="demo-tag">DEMO 03 · 熔断状态机</span><span class="demo-title">连败 3 次，停机 60 秒<span class="hint">点按钮打一通电话</span></span></div>
+      <div class="demo-body">
+        <div class="cb-wrap">
+          <div>
+            <div class="cb-diagram" id="d3-diagram">
+              <div id="d3-statebox"></div>
+              <div class="cb-counter" id="d3-counter"></div>
+              <div class="cb-counter-lbl" id="d3-counterlbl"></div>
+              <div class="cb-cool">
+                <div class="cb-bar"><i id="d3-bar"></i></div>
+                <div class="cb-bar-lbl"><span>冷却剩余</span><b id="d3-left">—</b></div>
+              </div>
+              <div class="cb-semi" id="d3-semi"></div>
+            </div>
+            <div class="controls" style="margin-top:12px;border-bottom:0;padding-bottom:0;margin-bottom:0">
+              <div class="ctl-btn">
+                <button class="run" id="d3-fail">来一通失败的</button>
+                <button class="ghost" id="d3-ok">来一通成功的</button>
+                <button class="ghost" id="d3-tick">时间 +15s</button>
+                <button class="ghost" id="d3-reset">重置</button>
+              </div>
+            </div>
+          </div>
+          <div class="cb-side">
+            <h5>状态台账</h5>
+            <div class="cb-log" id="d3-log"></div>
+            <div class="hintline">allowedFails = <b id="d3-af">3</b> · cooldown = <b id="d3-cd">60s</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="demo-foot">完全照抄 <b>Health.note()</b> 与 <b>state()</b> 的逻辑：连续失败计数、成功清零、撞线写入 <code>cooldownUntil</code>、冷却期内跳过、到期放行。参数与标本一致（3 次 / 60 秒）。</div>
+    </div>
+  </div>
+</section>

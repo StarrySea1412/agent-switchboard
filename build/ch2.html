@@ -1,0 +1,62 @@
+<section class="chapter" id="ch2">
+  <div class="ch-head">
+    <div class="ch-num"><b>02</b>CHAPTER<br/>00:01</div>
+    <div class="ch-title">
+      <h2>协议适配器：三家三种方言</h2>
+      <p>同一个「发一张图给模型看」，在 OpenAI、Anthropic、Gemini 那边是三封完全不同的电报</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">总机接线员的第二项基本功是外语。你要接九家服务商，但不能把九套协议各写一遍散落在业务代码里——否则换一家等于动一次手术。标本的做法是把「内部怎么说话」和「外面怎么说话」切开：内部只有一种格式，<code>models.js</code> 头注释原文：</p>
+    <div class="pull">内部统一消息格式（canonical）：<br/>{ role: 'user' | 'assistant', parts: [{ type:'text', text } | { type:'image', dataUrl }] }<br/>各适配器负责把它翻译成自家协议。</div>
+    <p>四种方言，四个适配器，全在同一个 <code>Adapters</code> 对象里，每个只实现三件事：<code>test()</code>（连通性测试）、<code>listModels()</code>（拉模型清单）、<code>chat()</code>（真正推理）。同一条「看图说话」的消息，三个 <code>chat()</code> 翻出来的电报长这样：</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>内部格式</th><th>OpenAI 兼容</th><th>Anthropic</th><th>Gemini</th></tr></thead>
+      <tbody>
+        <tr><td><b>文字块</b></td><td><code>{type:"text", text}</code></td><td><code>{type:"text", text}</code></td><td><code>{text}</code></td></tr>
+        <tr><td><b>图片块</b></td><td><code>{type:"image_url", image_url:{url}}</code></td><td><code>{type:"image", source:{type:"base64",...}}</code></td><td><code>{inline_data:{mime_type, data}}</code></td></tr>
+        <tr><td><b>角色叫法</b></td><td><code>user / assistant</code></td><td><code>user / assistant</code></td><td><code>user / <b>model</b></code></td></tr>
+        <tr><td><b>回复在哪</b></td><td><code>choices[0].message.content</code></td><td><code>content[].text</code> 拼接</td><td><code>candidates[0].content.parts[]</code></td></tr>
+        <tr><td><b>用量字段</b></td><td><code>prompt_tokens / completion_tokens</code></td><td><code>input_tokens / output_tokens</code></td><td><code>promptTokenCount / candidatesTokenCount</code></td></tr>
+      </tbody>
+    </table></div>
+    <p>表里每一格都核对过真实代码——最后两行尤其重要：回复解析和用量记账，每个适配器都要各写一遍。Gemini 连角色名都不一样：assistant 叫 <code>model</code>。这些差异琐碎、无聊、<em>每一条都是真金白银的坑</em>——漏掉哪条，报错信息会漂亮得完全看不出是翻译问题。</p>
+
+    <h3>收账也要翻译：一个函数统一三家字段名</h3>
+    <p>三家汇报用量的字段名完全不同，账本却只有一本。标本用一个 12 行的收敛函数把方言归一（models.js L414–430，有删节）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · tokensOf() · L414</span><b>用量字段名归一</b></div>
+<pre><span class="k">function</span> <span class="f">tokensOf</span>(usage) {
+  <span class="k">if</span> (!usage || <span class="k">typeof</span> usage !== <span class="s">"object"</span>) <span class="k">return</span> { in: <span class="n">0</span>, out: <span class="n">0</span> };
+  <span class="k">const</span> <span class="f">pick</span> = (...keys) => {
+    <span class="k">for</span> (<span class="k">const</span> k <span class="k">of</span> keys) {
+      <span class="k">const</span> v = <span class="f">Number</span>(usage[k]);
+      <span class="k">if</span> (<span class="f">Number</span>.isFinite(v) && v > <span class="n">0</span>) <span class="k">return</span> v;
+    }
+    <span class="k">return</span> <span class="n">0</span>;
+  };
+  <span class="k">return</span> {
+    <span class="c">// OpenAI: prompt_tokens / Anthropic: input_tokens / Gemini: promptTokenCount</span>
+    in:  <span class="f">pick</span>(<span class="s">"prompt_tokens"</span>, <span class="s">"input_tokens"</span>, <span class="s">"promptTokenCount"</span>),
+    out: <span class="f">pick</span>(<span class="s">"completion_tokens"</span>, <span class="s">"output_tokens"</span>, <span class="s">"candidatesTokenCount"</span>),
+  };
+}</pre></div>
+    <p>注意 <code>pick</code> 的顺序：把自家的字段名排在前面，非零才认。上游哪天改名，链子后端兜着。<strong>归一层是适配器模式的隐藏收益</strong>——方言只活在这 813 行里，出了这个文件，整个系统只认识 <code>{in, out}</code>。</p>
+
+    
+    <div class="fig"><div class="frame">
+      <img src="assets/art/ch2.webp" alt="单眼折纸鸟翻译官站在四部颜色各异的复古电话机之间，翅膀里捏着电报纸" width="1152" height="832" loading="lazy" style="width:100%;border:1px solid var(--line)"/>
+    </div><figcaption><span><b>FIG. 02</b> 方言翻译官：四部电话，一部对内</span><span>INK &amp; GOUACHE / 2026</span></figcaption></div>
+
+<h3>三个值钱的细节：都是踩过坑才有的</h3>
+    <p>适配器层真正动人的是那些「没有就不会坏、有了才不烦」的细节。摘三处真实代码：</p>
+    <ul>
+      <li><strong>老版 Ollama 的退路。</strong><code>listModels()</code> 先打标准的 <code>/v1/models</code>，失败时检查地址是不是本地 Ollama（<code>/:11434|localhost|127\.0\.0\.1/</code>），是就退到原生 <code>/api/tags</code> 再试一次（L102–109）。注释原文：「老版本 Ollama 不实现 /v1/models」。一行 if，救活一整个本地模型生态。</li>
+      <li><strong>浏览器直连的投名状。</strong>Anthropic 适配器的每个请求都带一个特别老实的头：<code>anthropic-dangerous-direct-browser-access: "true"</code>（L171、L189）。官方要求浏览器直连必须显式自认风险，注释也没回避：「生产环境应改为自建代理转发」。诚实写在协议里。</li>
+      <li><strong>错误信息的 180 字截断。</strong><code>readErr()</code> 把响应体里的错误挖出来拼进异常消息，但只留 180 个字符（L37）——中转站的报错体动辄塞一整页 HTML，不截断的话，一条错误日志能撑爆一屏。</li>
+    </ul>
+    <p>还有一处「让用户少打一个字」的体贴：<code>guessCaps()</code>（L317）从模型 ID 用正则猜能力——ID 里带 <code>vl|vision|4o|gemini|claude-(3|4|5)</code> 的猜支持视觉，带 <code>o1|-r1|thinking|deepseek-r</code> 的猜会推理。注释原文把界限划得很清楚：</p>
+    <div class="pull">只是预勾选，用户仍可手改 —— <b>猜错的代价只是一次多余的勾选。</b></div>
+    <p>这句注释值得单独裱起来：启发式的道德不在于猜得多准，而在于<strong>猜错时要便宜</strong>。同样的正则如果用来「猜错就拒绝服务」，就成了灾难；用来「预填一个可改的复选框」，就成了体贴。</p>
+    <p>适配器只负责把话说到、把账记对。至于对面那头是接了还是忙音、忙音之后该重拨还是该换号——那是错误分类的事，也是整台总机最容易被写错的一段。</p>
+  </div>
+</section>

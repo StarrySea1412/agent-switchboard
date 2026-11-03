@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<style>
+@font-face{font-family:"LXGW WenKai";src:url("../assets/fonts/wenkai-regular.woff2") format("woff2");font-weight:300 599}
+@font-face{font-family:"LXGW WenKai";src:url("../assets/fonts/wenkai-medium.woff2") format("woff2");font-weight:600 900}
+*{box-sizing:border-box;margin:0}
+body{width:900px;background:#e7dfcc;font-family:"LXGW WenKai","Microsoft YaHei",sans-serif;color:#292620;padding:34px 30px}
+.sheet{background:#f3eee2;border:2px solid #292620;border-radius:6px;padding:34px 36px 26px;box-shadow:8px 8px 0 rgba(122,108,78,.25);position:relative;overflow:hidden}
+.sheet::before{content:"";position:absolute;inset:0;background-image:radial-gradient(circle,rgba(96,84,58,.09) 1.2px,transparent 1.4px);background-size:22px 22px;pointer-events:none}
+.tag{display:inline-block;font-size:12px;letter-spacing:.28em;color:#f8f5ec;background:#3a7d5c;padding:5px 14px;border-radius:3px;font-weight:700;position:relative}
+h1{font-size:44px;letter-spacing:-.01em;margin:14px 0 6px;line-height:1.25;position:relative}
+h1 em{font-style:normal;color:#c04a2c}
+.sub{font-size:15.5px;color:#4f4a3e;line-height:1.8;margin-bottom:20px;position:relative}
+.hero-card{position:relative;background:#faf7ed;border:1.5px solid #beb396;border-left:5px solid #c04a2c;border-radius:4px;padding:15px 18px;display:flex;gap:16px;align-items:center;box-shadow:3px 3px 0 rgba(122,108,78,.16)}
+.hero-card b{font-size:17px;display:block;margin-bottom:3px}
+.hero-card p{font-size:12.8px;color:#7c7665;line-height:1.7}
+.hero-num{flex:0 0 auto;font-family:Consolas,monospace;font-size:30px;font-weight:700;color:#2c6249;background:#eaf1ec;border:1px solid rgba(58,125,92,.35);border-radius:4px;padding:8px 14px;text-align:center;line-height:1.15}
+.hero-num small{display:block;font-size:10px;color:#7c7665;font-weight:400;letter-spacing:.1em}
+.flow{display:flex;justify-content:center;gap:0;margin:16px 0 18px;position:relative}
+.flow span{font-family:Consolas,monospace;font-size:12px;color:#2c6249;background:#faf7ed;border:1.5px dashed rgba(58,125,92,.45);padding:6px 12px;border-radius:3px}
+.flow i{align-self:center;color:#c04a2c;font-style:normal;padding:0 8px;font-size:14px}
+.grid{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:#faf7ed;border:1.5px solid #beb396;border-radius:4px;padding:14px 16px;box-shadow:3px 3px 0 rgba(122,108,78,.14)}
+.card h3{font-size:16px;display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.card h3 i{font-style:normal;font-family:Consolas,monospace;font-size:12px;color:#f8f5ec;border-radius:3px;padding:3px 8px;letter-spacing:.08em}
+.card p{font-size:12.6px;color:#4f4a3e;line-height:1.78}
+.card p b{color:#1c1a14}
+.c1 h3 i{background:#3a7d5c}.c2 h3 i{background:#5c6f7d}.c3 h3 i{background:#96762f}
+.c4 h3 i{background:#c04a2c}.c5 h3 i{background:#7a5f8a}.c6 h3 i{background:#8a7448}
+.bars{margin-top:14px;position:relative;background:#faf7ed;border:1.5px solid #292620;border-radius:4px;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;box-shadow:3px 3px 0 rgba(122,108,78,.2)}
+.bars b{font-size:13.5px}
+.bars small{display:block;font-size:11px;color:#7c7665;margin-top:2px}
+.pill{font-family:Consolas,monospace;font-size:11px;color:#2c6249;border:1px solid rgba(58,125,92,.45);padding:4px 10px;border-radius:2px;background:#eaf1ec;margin:3px 0 3px 6px;white-space:nowrap}
+.bars>div:last-child{display:flex;flex-wrap:wrap;justify-content:flex-end;max-width:300px}
+.foot{margin-top:14px;text-align:center;font-size:11px;color:#a59d88;letter-spacing:.12em}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <span class="tag">造物手记 VOL.10 · 2026.11</span>
+  <h1>给 Agent <em>配一台总机</em></h1>
+  <p class="sub">模型路由与降级的解剖：错误分类、按角色路由、双层回退、熔断冷却、探测留痕与成本账本——「模型挂了之后发生什么」的每一环都可核对、可复现。</p>
+  <div class="hero-card">
+    <div class="hero-num">7+4<small>章 + 小样</small></div>
+    <div>
+      <b>双标本：fuel-agent 接入层（813 行）＋ cc-probe 渠道探针</b>
+      <p>Adapters 四协议适配器 · classifyError 六类分诊 · invoke() 两层包装 · Health 熔断（3 败/60s）· probe.db 真实探测 23 条；本文所有引文均标注真实文件、函数与行号。</p>
+    </div>
+  </div>
+  <div class="flow"><span>请求进线</span><i>→</i><span>classifyError 分诊</span><i>→</i><span>resolveChain 装配</span><i>→</i><span>invoke 逐级下坠</span><i>→</i><span>Health 熔断记账</span><i>→</i><span>CallLog 台账</span></div>
+  <div class="grid">
+    <div class="card c1"><h3><i>01</i>插拔资源</h3><p><b>配置与调用分离</b>（PROVIDERS 表 + adapter 字段）· 模型自带 caps/price 元数据 · <b>builtin-mock 永不失败的链尾</b> · 空链回落默认防死链</p></div>
+    <div class="card c2"><h3><i>02</i>协议适配</h3><p>内部统一 {role, parts} 消息 · 四适配器各写 <b>test/listModels/chat</b> · tokensOf 收敛三家用量字段名 · 老版 Ollama 退 /api/tags · 错误信息 180 字截断</p></div>
+    <div class="card c3"><h3><i>03</i>错误分类</h3><p><b>classifyError 六类正则</b>（中英文混 match）· RETRYABLE 白名单只有两类 · 正向白名单 vs 反向黑名单两种口径 · <b>503 壳包 model_not_found 的真实盲区</b></p></div>
+    <div class="card c4"><h3><i>04</i>路由与回退</h3><p>按角色三条优先级链（vision/plan/chat）· <b>重试包在换人里</b>（LiteLLM 口径）· backoffMs 指数退避 + ±20% 抖动防惊群 · fellBack/skipped 如实上报</p></div>
+    <div class="card c5"><h3><i>05</i>熔断与探测</h3><p><b>Health：连败 3 次 → 冷却 60s</b>（localStorage 持久化防刷新失忆）· cc-probe 五种探测（含鹈鹕 SVG）· <b>Timeline 逐毫秒留痕 + 密钥脱敏</b> · HostPacer 按 host 排队</p></div>
+    <div class="card c6"><h3><i>06</i>账本与价值观</h3><p>tokensOf/costOf <b>百万单价估算</b>（缺省记 0 不编数）· <b>fallbackRate 体检指标</b> · 降级必须可见、兜底必须明示 mock · 不许静默降级是产品契约</p></div>
+  </div>
+  <div class="bars">
+    <div><b>四枚确定性小样</b><small>错误分类台 / 回退链推演器 / 熔断状态机 / 探针账本 —— 真实数据入样，固定种子可复现</small></div>
+    <div><span class="pill">单文件 0 依赖</span><span class="pill">probe.db 实录</span><span class="pill">LXGW 文楷子集</span><span class="pill">GitHub Pages</span></div>
+  </div>
+  <p class="foot">STARRYSEA1412.GITHUB.IO/AGENT-SWITCHBOARD · SWITCHBOARD / 2026</p>
+</div>
+</body>
+</html>

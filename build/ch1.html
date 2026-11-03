@@ -1,0 +1,63 @@
+<section class="chapter" id="ch1">
+  <div class="ch-head">
+    <div class="ch-num"><b>01</b>CHAPTER<br/>00:00</div>
+    <div class="ch-title">
+      <h2>写死的模型是单点故障</h2>
+      <p>在谈路由之前先谈依赖：一个写死在代码里的 baseUrl，等于把整栋楼的安全拴在一根电话线上</p>
+    </div>
+  </div>
+  <div class="ch-body">
+    <p class="lede">先把最常见的那种代码摆在桌上——它没有名字，因为它太常见了：</p>
+    <div class="code"><div class="code-bar"><span>everywhere.py · 世界上大多数 Agent 的接法</span><b>单点</b></div>
+<pre><span class="k">def</span> <span class="f">ask</span>(prompt):
+    r = requests.post(<span class="s">"https://api.someone.com/v1/chat/completions"</span>,
+        headers={<span class="s">"Authorization"</span>: <span class="s">"Bearer sk-..."</span>},
+        json={<span class="s">"model"</span>: <span class="s">"gpt-x"</span>, <span class="s">"messages"</span>: [...]})
+    <span class="k">return</span> r.json()[<span class="s">"choices"</span>][<span class="s">0</span>][<span class="s">"message"</span>][<span class="s">"content"</span>]</pre></div>
+    <p>它work得如此之好，以至于你写完那天就忘了它的存在。然后某个凌晨——参照本篇开头的事故卡——它死了。而它死的时候，<strong>你的整个 Agent 跟着一起死</strong>，因为调用方根本无处可去：模型名、地址、密钥、协议，全都焊死在这一行里。这不是「能不能写出高质量回答」的问题，是可用性问题：<em>任何长跑的系统，模型层一定会出事故；问题只在你有没有备胎，以及换胎要多久。</em></p>
+
+    <h3>把模型从「依赖」改成「插拔资源」</h3>
+    <p>fuel-agent 的模型接入层是这么定位自己的——<code>models.js</code> 文件头的注释原文：</p>
+    <div class="pull">这一层是产品的核心差异点：<b>把「模型」做成可插拔资源，而不是写死在代码里。</b></div>
+    <p>「插拔资源」四个字拆开是三条硬规矩。第一，<strong>接入配置与调用逻辑分离</strong>：地址、密钥、协议、模型 ID 是一份纯数据（配置表），发请求、解析回复是另一套代码（适配器）。换模型 = 换数据，不换代码。第二，<strong>每个模型自带元数据</strong>：不只记「怎么连」，还记「会什么、多少钱」。第三，<strong>测试与生产走同一条代码路径</strong>——连通性测试就是发一条真的小请求，不是另写一个假检查。</p>
+    <p>看真实代码。配置表里每家服务商是一条记录，<code>adapter</code> 字段指向共用协议实现——注意「字节豆包」和「通义千问」的 adapter 都是 <code>openai</code>，因为它们都提供 OpenAI 兼容端点：</p>
+    <div class="code"><div class="code-bar"><span>store.js · L702–712（有删节）</span><b>PROVIDERS 配置表</b></div>
+<pre><span class="k">const</span> PROVIDERS = {
+  openai:    { name: <span class="s">"OpenAI 兼容"</span>,  baseUrl: <span class="s">"https://api.openai.com/v1"</span>, auth: <span class="s">"bearer"</span>,   adapter: <span class="s">"openai"</span>, needsKey: <span class="k">true</span> },
+  anthropic: { name: <span class="s">"Anthropic Claude"</span>, baseUrl: <span class="s">"https://api.anthropic.com/v1"</span>, auth: <span class="s">"x-api-key"</span>, adapter: <span class="s">"anthropic"</span>, needsKey: <span class="k">true</span> },
+  dashscope: { name: <span class="s">"阿里通义千问"</span>, baseUrl: <span class="s">"https://dashscope.aliyuncs.com/compatible-mode/v1"</span>, auth: <span class="s">"bearer"</span>, adapter: <span class="s">"openai"</span>, needsKey: <span class="k">true</span> },
+  ollama:    { name: <span class="s">"本地 Ollama"</span>,   baseUrl: <span class="s">"http://localhost:11434/v1"</span>, auth: <span class="s">"none"</span>,      adapter: <span class="s">"openai"</span>, needsKey: <span class="k">false</span> },
+  <span class="c">// gemini / ark / moonshot / custom ... 共 9 家</span>
+};</pre></div>
+    <p>而通过 <code>add()</code> 入册的每个模型，元数据长这样（store.js 的注释原文：价格「预设里带已知价格，手填模型默认 0（即不计费）」）：</p>
+    <div class="code"><div class="code-bar"><span>models.js · L556–575（有删节）</span><b>一个模型的全部家当</b></div>
+<pre><span class="k">const</span> model = {
+  id: <span class="f">uid</span>(<span class="s">"m"</span>), provider: cfg.provider, model: cfg.model,
+  baseUrl: cfg.baseUrl || (PROVIDERS[cfg.provider]?.baseUrl ?? <span class="s">""</span>),
+  caps: cfg.caps || { vision: <span class="k">true</span>, text: <span class="k">true</span>, reasoning: <span class="k">false</span> },
+  price: cfg.price || preset?.price || { in: <span class="n">0</span>, out: <span class="n">0</span> },   <span class="c">// 美元/百万token</span>
+  enabled: <span class="k">true</span>, status: <span class="s">"untested"</span>, latency: <span class="k">null</span>,
+  calls: <span class="n">0</span>, tokensIn: <span class="n">0</span>, tokensOut: <span class="n">0</span>, cost: <span class="n">0</span>,   <span class="c">// 用量账本随人走</span>
+};</pre></div>
+
+    <h3>总机的六个部件</h3>
+    <p>把这台总机拆开摆在桌上，一共六个部件。后面六章各解剖一到两个——先记住整体形状：</p>
+    <div class="fig"><div class="frame">
+      <p class="layers-cap">FIG. 01 · 总机六件套——从一次请求进线到一笔账入册，每个部件只做一件事</p>
+      <div class="layers">
+        <div class="layer"><span class="layer-mark lm-1"></span><i>P1</i><b>接入配置<small>PROVIDERS + MODEL_PRESETS</small></b><p>纯数据：地址、鉴权方式、能力、单价。换模型不动代码，加模型只加一行。</p></div>
+        <div class="layer"><span class="layer-mark lm-2"></span><i>P2</i><b>协议适配器<small>Adapters.openai / anthropic / gemini / mock</small></b><p>把统一的内部消息格式翻译成各家的方言。发请求、读回复、抛错误，全在这里。</p></div>
+        <div class="layer"><span class="layer-mark lm-3"></span><i>P3</i><b>错误分类<small>classifyError → 六类</small></b><p>听忙音还是空号：决定「重试」还是「换人」。整个容错体系的总开关（第五章）。</p></div>
+        <div class="layer"><span class="layer-mark lm-4"></span><i>P4</i><b>路由与回退<small>route() / resolveChain() / invoke()</small></b><p>按角色排优先级链，逐级下坠，永不失败的内置引擎守链尾（第四、五章）。</p></div>
+        <div class="layer"><span class="layer-mark lm-5"></span><i>P5</i><b>熔断器<small>Health：连败 3 次 → 冷却 60s</small></b><p>把「老占线的号码」记在小本上，冷却期内不再白拨，到期自动放行（第五章）。</p></div>
+        <div class="layer"><span class="layer-mark lm-6"></span><i>P6</i><b>账本与留痕<small>CallLog / tokensOf / costOf / Timeline</small></b><p>每一通电话的台账：走了谁、几毫秒、几个 token、几美分、有没有回退（第六、七章）。</p></div>
+      </div>
+    </div><figcaption><span><b>FIG. 01</b> 六件套装配图</span><span>标本 A · models.js</span></figcaption></div>
+
+    <h3>链尾那位「永不失败」的接线员</h3>
+    <p>六个部件里最容易被轻视的是内置模拟引擎（<code>builtin-mock</code>）——一个不出网、本地应答的假模型。它在配置表里的自我介绍（store.js 注释原文）：</p>
+    <div class="pull">零配置离线引擎。未接入真实模型时接管全部判断，<b>保证原型可用</b>。</div>
+    <p>它有两重身份。开发期，它是空号录音：你还没填任何 API key，整个产品照常能跑通全流程，界面不是一具白屏。生产期，它是<strong>每一条回退链的最后一环</strong>——所有真模型都挂掉时，请求落到它头上，拿回一句明示「模拟」的回复（第五章会看到 <code>resolveChain()</code> 怎么把它钉在链尾）。「宁可明示模拟，不许静默失败」是设计立场，不是技术偷懒：模拟回复会让下游明确知道「这不是真模型的判断」，而一句从死渠道里捞出来的报错堆栈，往往被当成正常回答吞下去。</p>
+    <p>下一章先解剖 P2：模型还没挂之前，你的请求得先过语言关。</p>
+  </div>
+</section>
