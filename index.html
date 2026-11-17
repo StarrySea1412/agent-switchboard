@@ -1036,7 +1036,7 @@ input[type=text]:focus,select:focus{outline:2px solid var(--alarm);outline-offse
         <tr><td>verified</td><td class="num">1</td><td><b>结果被二次核验过</b>（不只是「没报错」）</td></tr>
       </tbody>
     </table></div>
-    <p><code>verified=1</code> 这个字段是探针设计里最硬的一笔：<strong>「HTTP 200」不等于「成功了」</strong>。对面可能返回 200 加一句「抱歉，我无法生成图片」——如果探针把这种也算成功，账本会骗人。所以成功的探测还要过一道内容核验（真的拿到了可解析的 SVG）。这与 VOL.05（SeeFlow）的「证据先于结论」是同一条原则，只是落在了另一层。</p>
+    <p><code>verified=1</code> 这个字段是探针设计里最硬的一笔：<strong>「HTTP 200」不等于「成功了」</strong>。对面可能返回 200 加一句「抱歉，我无法生成图片」——如果探针把这种也算成功，账本会骗人。所以成功的探测还要过一道内容核验（真的拿到了可解析的 SVG）。这与 <a href="https://starrysea1412.github.io/seeflow-story/" target="_blank" rel="noopener" style="text-decoration:underline dotted;text-underline-offset:3px">VOL.05</a>（SeeFlow）的「证据先于结论」是同一条原则，只是落在了另一层。</p>
 
     <h3>探测本身的礼仪：pacing 与脱敏</h3>
     <p>主动探测有个天然副作用：<strong>你会被当成攻击者</strong>。ch3 现场③的 <code>bulk probe guard</code> 就是证据——60 秒 5 个模型触发反滥用封禁，<code>offense 3</code> 说明这台总机已经犯过三次。探针里对应的机制是 <code>HostPacer</code>（engine.py · <code>wait_turn()</code>）：按主机名排队，同一个 host 的请求不能同时打出去。这是一个极简的令牌桶——但它证明了一件重要的事：<em>探测是一把双刃剑，你越快知道真相，越可能被真相的来源封掉。</em></p>
@@ -1569,5 +1569,5 @@ s.fallbackRate = s.total ? <span class="f">Math</span>.<span class="f">round</sp
 })();
 
 </script>
-</body>
+<div class="series-nav" style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;align-items:baseline;font-family:var(--mono,Consolas,monospace);font-size:11px;letter-spacing:1px;color:var(--muted,#8a959c);margin:26px 0 0;padding:16px 0 0;border-top:1px solid var(--line,#d8d8cc)"><a href="https://starrysea1412.github.io/canvas-editor-anatomy/" style="color:inherit">← VOL.09 把文字画成像素</a><a href="https://starrysea1412.github.io/makers-notebook/" style="color:var(--orange,var(--steel,#3e5c6e));font-weight:700">☰ 全系列目录</a><a href="https://starrysea1412.github.io/agent-orchestrator/" style="color:inherit">VOL.11 当 Agent 指挥 Agent →</a></div></body>
 </html>
